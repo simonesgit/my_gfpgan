@@ -1,6 +1,8 @@
 import os
 import torch
 from gfpgan import GFPGANer
+import cv2
+import numpy as np
 
 class GFPGANHandler:
     def __init__(self):
@@ -13,10 +15,16 @@ class GFPGANHandler:
         )
 
     def process_image(self, input_path, output_path):
+        # Read image
+        img = cv2.imread(input_path, cv2.IMREAD_COLOR)
+        
         # Process the image using GFPGAN
-        cropped_faces, restored_faces, restored_img = self.model.enhance(
-            input_path, has_aligned=False, only_center_face=False, paste_back=True
+        _, _, restored_img = self.model.enhance(
+            img, has_aligned=False, only_center_face=False, paste_back=True
         )
+        
         # Save the result
         if restored_img is not None:
-            torch.save(restored_img, output_path)
+            cv2.imwrite(output_path, restored_img)
+            return True
+        return False
