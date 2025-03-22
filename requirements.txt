@@ -2,6 +2,8 @@ fastapi
 python-multipart
 uvicorn
 torch
+torchvision
 basicsr
 facexlib
 gfpgan
+opencv-python
