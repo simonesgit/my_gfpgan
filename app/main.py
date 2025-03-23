@@ -21,8 +21,8 @@ async def restore_face(file: UploadFile = File(...)):
         logger.info(f"Received file: {file.filename}")
         
         # Create unique filenames
-        temp_input = f"/tmp/input_{file.filename}"
-        temp_output = f"/tmp/output_{file.filename}"
+        temp_input = f"/app/outputs/input_{file.filename}"
+        temp_output = f"/app/outputs/output_{file.filename}"
         
         # Save uploaded file
         logger.info("Saving input file")

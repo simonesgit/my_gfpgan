@@ -11,6 +11,8 @@ class GFPGANHandler:
     def __init__(self):
         logger.info("Initializing GFPGAN model")
         try:
+            # Create output directory if it doesn't exist
+            os.makedirs('/app/outputs', exist_ok=True)
             self.model = GFPGANer(
                 model_path='experiments/pretrained_models/GFPGANv1.4.pth',
                 upscale=2,
