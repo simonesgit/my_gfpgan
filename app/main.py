@@ -18,6 +18,105 @@ gfpgan_handler = GFPGANHandler()
 # Store job status and file paths
 jobs: Dict[str, Dict] = {}
 
+# Add these imports at the top
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+
+# Add after app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Add new endpoint for the web interface
+@app.get("/", response_class=HTMLResponse)
+async def web_interface():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>GFPGAN Face Restoration</title>
+        <style>
+            body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+            .container { text-align: center; }
+            #uploadForm { margin: 20px 0; }
+            #status { margin: 20px 0; }
+            #result { margin: 20px 0; }
+            .button { background: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
+            .button:disabled { background: #cccccc; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>GFPGAN Face Restoration</h1>
+            <form id="uploadForm">
+                <input type="file" id="imageFile" accept="image/*" required>
+                <button type="submit" class="button">Upload and Process</button>
+            </form>
+            <div id="status"></div>
+            <div id="result"></div>
+        </div>
+        
+        <script>
+            const form = document.getElementById('uploadForm');
+            const status = document.getElementById('status');
+            const result = document.getElementById('result');
+            
+            form.onsubmit = async (e) => {
+                e.preventDefault();
+                const formData = new FormData();
+                formData.append('file', document.getElementById('imageFile').files[0]);
+                
+                // Disable form during processing
+                form.querySelector('button').disabled = true;
+                status.textContent = 'Uploading image...';
+                
+                try {
+                    // Submit image
+                    const submitResponse = await fetch('/submit', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!submitResponse.ok) throw new Error('Upload failed');
+                    
+                    const jobData = await submitResponse.json();
+                    status.textContent = 'Processing image...';
+                    
+                    // Poll for status
+                    while (true) {
+                        const statusResponse = await fetch(jobData.status_url);
+                        
+                        if (statusResponse.headers.get('content-type')?.includes('image')) {
+                            // Image is ready
+                            const blob = await statusResponse.blob();
+                            const imgUrl = URL.createObjectURL(blob);
+                            result.innerHTML = `
+                                <h3>Restored Image:</h3>
+                                <img src="${imgUrl}" style="max-width: 100%">
+                                <br>
+                                <a href="${imgUrl}" download="restored_image.jpg" class="button">Download</a>
+                            `;
+                            status.textContent = 'Processing complete!';
+                            break;
+                        }
+                        
+                        const statusData = await statusResponse.json();
+                        if (statusData.status === 'failed') {
+                            throw new Error('Processing failed');
+                        }
+                        
+                        // Wait before next poll
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                } catch (error) {
+                    status.textContent = `Error: ${error.message}`;
+                } finally {
+                    form.querySelector('button').disabled = false;
+                }
+            };
+        </script>
+    </body>
+    </html>
+    """
+
 @app.post("/submit")
 async def submit_image(file: UploadFile = File(...)):
     try:
