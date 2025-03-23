@@ -17,6 +17,9 @@ async def restore_face(file: UploadFile = File(...)):
     temp_input = None
     temp_output = None
     try:
+        # Create outputs directory if it doesn't exist
+        os.makedirs("/app/outputs", exist_ok=True)
+        
         # Log file details
         logger.info(f"Received file: {file.filename}")
         
@@ -43,23 +46,42 @@ async def restore_face(file: UploadFile = File(...)):
             raise HTTPException(status_code=500, detail="Output file not generated")
             
         logger.info("Processing successful, returning file")
-        return FileResponse(
-            temp_output, 
+        
+        # Read the file into memory before cleanup
+        with open(temp_output, 'rb') as f:
+            content = f.read()
+            
+        # Cleanup files
+        logger.info("Cleaning up temporary files")
+        if os.path.exists(temp_input):
+            os.remove(temp_input)
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+            
+        # Return the file content directly
+        from fastapi.responses import Response
+        return Response(
+            content=content,
             media_type="image/jpeg",
-            filename=f"restored_{file.filename}"
+            headers={
+                "Content-Disposition": f'attachment; filename="restored_{file.filename}"'
+            }
         )
         
     except Exception as e:
         logger.error(f"Error occurred: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    
-    finally:
-        # Cleanup
-        logger.info("Cleaning up temporary files")
+        # Cleanup on error
         if temp_input and os.path.exists(temp_input):
             os.remove(temp_input)
         if temp_output and os.path.exists(temp_output):
             os.remove(temp_output)
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_keep_alive=300)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000, 
+        timeout_keep_alive=300,
+        timeout_graceful_shutdown=300
+    )
