@@ -23,7 +23,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
 # Add after app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Remove these lines
+# app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Keep only the necessary import
+from fastapi.responses import HTMLResponse
 
 # Add new endpoint for the web interface
 @app.get("/", response_class=HTMLResponse)
