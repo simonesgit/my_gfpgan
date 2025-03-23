@@ -1,9 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import Response, StreamingResponse
 import uvicorn
 from gfpgan_handler import GFPGANHandler
 import os
 import logging
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -12,30 +13,41 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 gfpgan_handler = GFPGANHandler()
 
+async def process_with_heartbeat(temp_input, temp_output, gfpgan_handler):
+    async def heartbeat():
+        while True:
+            yield b'\n'  # Send newline as heartbeat
+            await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+
+    # Start heartbeat
+    heartbeat_task = asyncio.create_task(heartbeat().__anext__())
+    
+    # Process image
+    success = gfpgan_handler.process_image(temp_input, temp_output)
+    
+    # Cancel heartbeat
+    heartbeat_task.cancel()
+    
+    return success
+
 @app.post("/restore")
 async def restore_face(file: UploadFile = File(...)):
     temp_input = None
     temp_output = None
     try:
-        # Create outputs directory if it doesn't exist
         os.makedirs("/app/outputs", exist_ok=True)
         
-        # Log file details
         logger.info(f"Received file: {file.filename}")
-        
-        # Create unique filenames
         temp_input = f"/app/outputs/input_{file.filename}"
         temp_output = f"/app/outputs/output_{file.filename}"
         
-        # Save uploaded file
         logger.info("Saving input file")
         content = await file.read()
         with open(temp_input, "wb") as buffer:
             buffer.write(content)
         
-        # Process image
         logger.info("Processing image with GFPGAN")
-        success = gfpgan_handler.process_image(temp_input, temp_output)
+        success = await process_with_heartbeat(temp_input, temp_output, gfpgan_handler)
         
         if not success:
             logger.error("Processing failed")
@@ -47,19 +59,15 @@ async def restore_face(file: UploadFile = File(...)):
             
         logger.info("Processing successful, returning file")
         
-        # Read the file into memory before cleanup
         with open(temp_output, 'rb') as f:
             content = f.read()
             
-        # Cleanup files
         logger.info("Cleaning up temporary files")
         if os.path.exists(temp_input):
             os.remove(temp_input)
         if os.path.exists(temp_output):
             os.remove(temp_output)
             
-        # Return the file content directly
-        from fastapi.responses import Response
         return Response(
             content=content,
             media_type="image/jpeg",
@@ -70,7 +78,6 @@ async def restore_face(file: UploadFile = File(...)):
         
     except Exception as e:
         logger.error(f"Error occurred: {str(e)}")
-        # Cleanup on error
         if temp_input and os.path.exists(temp_input):
             os.remove(temp_input)
         if temp_output and os.path.exists(temp_output):
