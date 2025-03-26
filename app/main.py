@@ -74,67 +74,93 @@ async def web_interface():
                 result.innerHTML = '';
                 
                 try {
-                    // Submit image
-                    const submitResponse = await fetch('/submit', {
-                        method: 'POST',
-                        body: formData
-                    });
+                    // Submit image with short timeout
+                    const submitResponse = await Promise.race([
+                        fetch('/submit', {
+                            method: 'POST',
+                            body: formData
+                        }),
+                        new Promise((_, reject) => 
+                            setTimeout(() => reject(new Error('Upload timeout')), 15000)
+                        )
+                    ]);
                     
                     if (!submitResponse.ok) throw new Error('Upload failed');
                     
+                    // Add logging to debug response
                     const jobData = await submitResponse.json();
-                    let dots = '';
+                    console.log('Submit response:', jobData);  // Debug log
+                    
+                    if (!jobData.status_url) {
+                        throw new Error('Invalid server response');
+                    }
+                    status.textContent = jobData.message;
+                    
+                    // Remove this duplicate declaration
                     let attempts = 0;
-                    const maxAttempts = 90; // 3 minutes maximum wait
+                    const maxAttempts = 30; // 5 minutes maximum wait (10 seconds × 30 attempts)
                     
                     // Poll for status
+                    async function checkStatus() {
+                        const statusResponse = await fetch(jobData.status_url);
+                        
+                        if (statusResponse.status === 404) {
+                            throw new Error('Job not found - please try again');
+                        }
+                        
+                        const statusData = await statusResponse.json();
+                        
+                        if (statusData.status === 'failed') {
+                            throw new Error(statusData.message || 'Processing failed');
+                        }
+                        
+                        if (statusData.status === 'completed' && statusData.image_url) {
+                            // Display images
+                            result.innerHTML = `
+                                <h3>Restored Image:</h3>
+                                <div style="display: flex; justify-content: center; margin: 20px 0;">
+                                    <div style="max-width: 45%; margin: 0 10px;">
+                                        <h4>Original</h4>
+                                        <img src="${URL.createObjectURL(document.getElementById('imageFile').files[0])}" 
+                                            style="max-width: 100%; border: 1px solid #ccc;">
+                                    </div>
+                                    <div style="max-width: 45%; margin: 0 10px;">
+                                        <h4>Restored</h4>
+                                        <img src="${statusData.image_url}" style="max-width: 100%; border: 1px solid #ccc;">
+                                    </div>
+                                </div>
+                                <button onclick="window.open('${statusData.image_url}')" class="button">View Full Size</button>
+                                <a href="${statusData.image_url}" download="restored_image.jpg" class="button" style="margin-left: 10px;">Save to Computer</a>
+                            `;
+                            status.textContent = '✅ Processing complete!';
+                            return true;
+                        } else {
+                            status.textContent = statusData.message;
+                            result.innerHTML = `
+                                <button onclick="checkStatus()" class="button">Check Status</button>
+                            `;
+                            return false;
+                        }
+                    }
+                    
+                    // Keep this declaration
+                    attempts = 0;  // Just assign, don't redeclare
+                    // const maxAttempts = 30;  // Remove duplicate
+                    
                     while (attempts < maxAttempts) {
                         try {
-                            const statusResponse = await fetch(jobData.status_url);
+                            const isComplete = await checkStatus();
+                            if (isComplete) break;
                             
-                            if (statusResponse.headers.get('content-type')?.includes('image')) {
-                                // Image is ready
-                                const blob = await statusResponse.blob();
-                                const imgUrl = URL.createObjectURL(blob);
-                                result.innerHTML = `
-                                    <h3>Restored Image:</h3>
-                                    <div style="display: flex; justify-content: center; margin: 20px 0;">
-                                        <div style="max-width: 45%; margin: 0 10px;">
-                                            <h4>Original</h4>
-                                            <img src="${URL.createObjectURL(document.getElementById('imageFile').files[0])}" 
-                                                style="max-width: 100%; border: 1px solid #ccc;">
-                                        </div>
-                                        <div style="max-width: 45%; margin: 0 10px;">
-                                            <h4>Restored</h4>
-                                            <img src="${imgUrl}" style="max-width: 100%; border: 1px solid #ccc;">
-                                        </div>
-                                    </div>
-                                    <a href="${imgUrl}" download="restored_image.jpg" class="button">Download Restored Image</a>
-                                `;
-                                status.textContent = '✅ Processing complete! You can download the restored image.';
-                                break;
-                            }
-                            
-                            const statusData = await statusResponse.json();
-                            if (statusData.status === 'failed') {
-                                throw new Error('Processing failed - please try again');
-                            }
-                            
-                            // Update status with animated dots
-                            dots = dots.length >= 3 ? '' : dots + '.';
-                            status.textContent = `⏳ Processing image${dots} (${Math.round((attempts/maxAttempts) * 100)}%)`;
-                            
-                            // Wait before next poll
-                            await new Promise(resolve => setTimeout(resolve, 2000));
+                            await new Promise(resolve => setTimeout(resolve, 20000));
                             attempts++;
-                            
                         } catch (error) {
-                            if (attempts >= maxAttempts) {
-                                throw new Error('Processing timeout - please try again');
+                            if (error.message === 'Failed to fetch') {
+                                await new Promise(resolve => setTimeout(resolve, 20000));
+                                attempts++;
+                                continue;
                             }
-                            // Continue polling even if one request fails
-                            await new Promise(resolve => setTimeout(resolve, 2000));
-                            attempts++;
+                            throw error;
                         }
                     }
                     
@@ -175,20 +201,15 @@ def cleanup_old_files():
     except Exception as e:
         logger.error(f"Error during file cleanup: {str(e)}")
 
-# Modify the submit endpoint to include cleanup
 @app.post("/submit")
 async def submit_image(file: UploadFile = File(...)):
     try:
         # Cleanup old files first
         cleanup_old_files()
         
-        # Generate unique job ID
         job_id = str(uuid4())
-        
-        # Create outputs directory
         os.makedirs("/app/outputs", exist_ok=True)
         
-        # Save input file
         input_path = f"/app/outputs/input_{job_id}_{file.filename}"
         output_path = f"/app/outputs/output_{job_id}_{file.filename}"
         
@@ -196,12 +217,13 @@ async def submit_image(file: UploadFile = File(...)):
         with open(input_path, "wb") as buffer:
             buffer.write(content)
         
-        # Store job info
+        # Store job info with timestamp
         jobs[job_id] = {
             "status": "processing",
             "input_path": input_path,
             "output_path": output_path,
-            "original_filename": file.filename
+            "original_filename": file.filename,
+            "start_time": datetime.now()
         }
         
         # Start processing in background
@@ -210,12 +232,69 @@ async def submit_image(file: UploadFile = File(...)):
         return JSONResponse({
             "job_id": job_id,
             "status": "processing",
-            "status_url": f"/status/{job_id}"
+            "status_url": f"/status/{job_id}",
+            "message": "Image uploaded successfully. Please check status in 2-3 minutes."
         })
         
     except Exception as e:
         logger.error(f"Error submitting job: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/status/{job_id}")
+async def get_status(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    job = jobs[job_id]
+    
+    if job["status"] == "failed":
+        error = job.get("error", "Unknown error")
+        cleanup_job(job_id)
+        raise HTTPException(status_code=500, detail=error)
+        
+    if job["status"] == "processing":
+        elapsed_time = datetime.now() - job["start_time"]
+        elapsed_minutes = elapsed_time.total_seconds() / 60
+        
+        return JSONResponse({
+            "status": "processing",
+            "job_id": job_id,
+            "message": f"Still processing (running for {elapsed_minutes:.1f} minutes)",
+            "elapsed_minutes": round(elapsed_minutes, 1)
+        })
+    
+    # Job completed
+    if not os.path.exists(job["output_path"]):
+        raise HTTPException(status_code=404, detail="Output file not found")
+        
+    image_url = f"/images/{job_id}/{os.path.basename(job['output_path'])}"
+    return JSONResponse({
+        "status": "completed",
+        "image_url": image_url,
+        "message": "Processing complete!"
+    })
+
+# Add new endpoint to serve images
+@app.get("/images/{job_id}/{filename}")
+async def get_image(job_id: str, filename: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    job = jobs[job_id]
+    if not os.path.exists(job["output_path"]):
+        raise HTTPException(status_code=404, detail="Image not found")
+        
+    with open(job["output_path"], "rb") as f:
+        content = f.read()
+    
+    return Response(
+        content=content,
+        media_type="image/jpeg",
+        headers={
+            "Content-Disposition": f'attachment; filename="restored_{job["original_filename"]}"',
+            "Cache-Control": "no-cache"
+        }
+    )
 
 async def process_image(job_id: str):
     try:
@@ -232,53 +311,9 @@ async def process_image(job_id: str):
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
 
-@app.get("/status/{job_id}")
-async def get_status(job_id: str):
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-        
-    job = jobs[job_id]
-    
-    if job["status"] == "failed":
-        error = job.get("error", "Unknown error")
-        # Cleanup failed job
-        cleanup_job(job_id)
-        raise HTTPException(status_code=500, detail=error)
-        
-    if job["status"] == "processing":
-        return JSONResponse({
-            "status": "processing",
-            "job_id": job_id
-        })
-    
-    # Job completed, return the image
-    try:
-        with open(job["output_path"], "rb") as f:
-            content = f.read()
-            
-        # Cleanup completed job
-        cleanup_job(job_id)
-        
-        return Response(
-            content=content,
-            media_type="image/jpeg",
-            headers={
-                "Content-Disposition": f'attachment; filename="restored_{job["original_filename"]}"'
-            }
-        )
-    except Exception as e:
-        logger.error(f"Error returning result for job {job_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 def cleanup_job(job_id: str):
-    job = jobs[job_id]
-    # Remove files
-    if os.path.exists(job["input_path"]):
-        os.remove(job["input_path"])
-    if os.path.exists(job["output_path"]):
-        os.remove(job["output_path"])
-    # Remove job from dictionary
-    jobs.pop(job_id)
+    if job_id in jobs:
+        jobs.pop(job_id)  # Only remove from jobs dictionary, keep files for download
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

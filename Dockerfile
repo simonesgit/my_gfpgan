@@ -27,7 +27,4 @@ RUN mkdir -p experiments/pretrained_models \
     && wget https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth \
     -P experiments/pretrained_models
 
-# Create static directory for FastAPI
-RUN mkdir -p /app/static
-
 CMD ["python", "app/main.py"]
