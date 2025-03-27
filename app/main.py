@@ -207,33 +207,68 @@ async def submit_image(file: UploadFile = File(...)):
         # Cleanup old files first
         cleanup_old_files()
         
+        # Check if there's any job currently processing
+        active_jobs = sum(1 for job in jobs.values() if job["status"] == "processing")
+        if active_jobs > 0:
+            logger.warning(f"Request rejected: {active_jobs} job(s) already processing")
+            return JSONResponse({
+                "status": "error",
+                "message": "Server is busy processing another image. Please try again in 2-3 minutes."
+            }, status_code=429)  # 429 Too Many Requests
+        
         job_id = str(uuid4())
         os.makedirs("/app/outputs", exist_ok=True)
         
         input_path = f"/app/outputs/input_{job_id}_{file.filename}"
         output_path = f"/app/outputs/output_{job_id}_{file.filename}"
         
+        # Read file content
         content = await file.read()
-        with open(input_path, "wb") as buffer:
-            buffer.write(content)
+        
+        # Create a background task to save the file and process it
+        async def save_and_process():
+            try:
+                # Save file
+                with open(input_path, "wb") as buffer:
+                    buffer.write(content)
+                
+                # Update job status to processing
+                jobs[job_id]["status"] = "processing"
+                
+                # Process image
+                success = gfpgan_handler.process_image(
+                    jobs[job_id]["input_path"],
+                    jobs[job_id]["output_path"]
+                )
+                
+                if success and os.path.exists(jobs[job_id]["output_path"]):
+                    jobs[job_id]["status"] = "completed"
+                else:
+                    jobs[job_id]["status"] = "failed"
+                    jobs[job_id]["error"] = "Processing failed"
+            except Exception as e:
+                logger.error(f"Error in background task: {str(e)}")
+                jobs[job_id]["status"] = "failed"
+                jobs[job_id]["error"] = str(e)
         
         # Store job info with timestamp
         jobs[job_id] = {
-            "status": "processing",
+            "status": "queued",
             "input_path": input_path,
             "output_path": output_path,
             "original_filename": file.filename,
             "start_time": datetime.now()
         }
         
-        # Start processing in background
-        asyncio.create_task(process_image(job_id))
+        # Start background task
+        asyncio.create_task(save_and_process())
         
+        # Return response immediately
         return JSONResponse({
             "job_id": job_id,
-            "status": "processing",
+            "status": "queued",
             "status_url": f"/status/{job_id}",
-            "message": "Image uploaded successfully. Please check status in 2-3 minutes."
+            "message": "Image uploaded successfully. Processing will start shortly."
         })
         
     except Exception as e:
@@ -296,24 +331,15 @@ async def get_image(job_id: str, filename: str):
         }
     )
 
-async def process_image(job_id: str):
-    try:
-        job = jobs[job_id]
-        success = gfpgan_handler.process_image(job["input_path"], job["output_path"])
-        
-        if success and os.path.exists(job["output_path"]):
-            jobs[job_id]["status"] = "completed"
-        else:
-            jobs[job_id]["status"] = "failed"
-            
-    except Exception as e:
-        logger.error(f"Error processing job {job_id}: {str(e)}")
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-
 def cleanup_job(job_id: str):
     if job_id in jobs:
         jobs.pop(job_id)  # Only remove from jobs dictionary, keep files for download
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        timeout_keep_alive=120,  # Increase keep-alive timeout
+        h11_max_incomplete_event_size=0  # No limit on request size
+    )
